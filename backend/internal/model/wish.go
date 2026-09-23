@@ -2,7 +2,7 @@ package model
 
 import "time"
 
-// Wish 心愿实体。状态机：pending -> claimed -> in_progress -> completed。
+// Wish 心愿实体。状态机：pending -> claimed -> in_progress -> pending_confirmation -> completed。
 type Wish struct {
 	ID              uint64     `gorm:"primaryKey" json:"id"`
 	UserID          uint64     `gorm:"index;not null" json:"user_id"`

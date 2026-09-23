@@ -29,6 +29,7 @@ export interface ClaimSummary {
   progress: number;
   latest_note?: string;
   status: string;
+  reject_reason?: string;
   milestone_count: number;
   created_at: string;
   updated_at: string;

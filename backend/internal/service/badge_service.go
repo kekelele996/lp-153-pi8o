@@ -25,6 +25,8 @@ type BadgeService interface {
 	GrantCompletionBadges(userID uint64) error
 	ListMine(userID uint64) ([]dto.BadgeResponse, error)
 	Leaderboard(limit int) ([]model.FulfillerStat, error)
+	// InvalidateLeaderboard 发布者验收通过后清除排行榜缓存（排行榜含通配 limit，按 key 前缀扫描）。
+	InvalidateLeaderboard(ctx context.Context) error
 }
 
 type badgeService struct {
@@ -131,4 +133,29 @@ func (s *badgeService) Leaderboard(limit int) ([]model.FulfillerStat, error) {
 	}
 	s.logger.Info(constants.LogLeaderboardBuilt, "source", "db", "count", len(rows))
 	return rows, nil
+}
+
+// InvalidateLeaderboard 验收通过导致完成数变化时失效所有 limit 的排行榜缓存。
+func (s *badgeService) InvalidateLeaderboard(ctx context.Context) error {
+	if s.redis == nil {
+		return nil
+	}
+	pattern := "wishwall:leaderboard:*"
+	var cursor uint64
+	for {
+		keys, next, err := s.redis.Scan(ctx, cursor, pattern, 100).Result()
+		if err != nil {
+			return util.NewAppError(constants.CodeInternalError, constants.MsgInternalError, err)
+		}
+		if len(keys) > 0 {
+			if err := s.redis.Del(ctx, keys...).Err(); err != nil {
+				return util.NewAppError(constants.CodeInternalError, constants.MsgInternalError, err)
+			}
+		}
+		cursor = next
+		if cursor == 0 {
+			break
+		}
+	}
+	return nil
 }

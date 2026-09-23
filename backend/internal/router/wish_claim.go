@@ -13,4 +13,5 @@ func RegisterWishClaimRoutes(rg *gin.RouterGroup, h *handler.WishClaimHandler, a
 	rg.GET("/claims/mine", auth, h.Mine)
 	rg.PUT("/claims/:id/progress", auth, h.UpdateProgress)
 	rg.POST("/claims/:id/complete", auth, h.Complete)
+	rg.POST("/wishes/:id/review", auth, h.Review)
 }

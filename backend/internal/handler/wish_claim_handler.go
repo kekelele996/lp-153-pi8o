@@ -74,7 +74,31 @@ func (h *WishClaimHandler) Complete(c *gin.Context) {
 		handleError(c, err)
 		return
 	}
-	c.JSON(200, gin.H{"code": 0, "message": constants.MsgWishCompleted, "data": dto.ToWishClaimResponse(claim, "", "")})
+	c.JSON(200, gin.H{"code": 0, "message": constants.MsgClaimSubmitted, "data": dto.ToWishClaimResponse(claim, "", "")})
+}
+
+// Review POST /api/v1/wishes/:id/review 发布者验收（通过/退回）。
+func (h *WishClaimHandler) Review(c *gin.Context) {
+	wishID, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		responseError(c, 400, constants.CodeBadRequest, "心愿 id 参数非法")
+		return
+	}
+	var req dto.ReviewWishRequest
+	if !bindJSON(c, &req) {
+		return
+	}
+	userID := middleware.CurrentUserID(c)
+	claim, err := h.claim.Review(c.Request.Context(), userID, wishID, req, c.ClientIP(), middleware.GetRequestID(c))
+	if err != nil {
+		handleError(c, err)
+		return
+	}
+	msg := constants.MsgReviewApproved
+	if !req.Approved {
+		msg = constants.MsgReviewRejected
+	}
+	c.JSON(200, gin.H{"code": 0, "message": msg, "data": dto.ToWishClaimResponse(claim, "", "")})
 }
 
 // Mine GET /api/v1/claims/mine

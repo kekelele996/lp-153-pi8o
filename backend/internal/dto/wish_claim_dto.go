@@ -6,14 +6,20 @@ import (
 
 // UpdateProgressRequest 更新圆梦进度入参（百分比+文字+里程碑打卡）。
 type UpdateProgressRequest struct {
-	Progress     int    `json:"progress" binding:"required,min=0,max=100"`
-	Note         string `json:"note" binding:"omitempty,max=1000"`
-	IsMilestone  bool   `json:"is_milestone"`
+	Progress    int    `json:"progress" binding:"required,min=0,max=100"`
+	Note        string `json:"note" binding:"omitempty,max=1000"`
+	IsMilestone bool   `json:"is_milestone"`
 }
 
-// CompleteClaimRequest 标记完成入参。
+// CompleteClaimRequest 标记完成入参：圆梦人提交后进入待确认，需发布者验收。
 type CompleteClaimRequest struct {
 	Note string `json:"note" binding:"omitempty,max=1000"`
+}
+
+// ReviewWishRequest 发布者验收入参：approved=true 通过；false 退回且必须填写原因。
+type ReviewWishRequest struct {
+	Approved bool   `json:"approved"`
+	Reason   string `json:"reason" binding:"omitempty,max=1000"`
 }
 
 // WishClaimResponse 认领记录返回结构。
@@ -26,6 +32,7 @@ type WishClaimResponse struct {
 	Progress       int    `json:"progress"`
 	LatestNote     string `json:"latest_note"`
 	Status         string `json:"status"`
+	RejectReason   string `json:"reject_reason"`
 	MilestoneCount int    `json:"milestone_count"`
 	CreatedAt      string `json:"created_at"`
 	UpdatedAt      string `json:"updated_at"`
@@ -42,6 +49,7 @@ func ToWishClaimResponse(c *model.WishClaim, wishTitle, fulfillerName string) Wi
 		Progress:       c.Progress,
 		LatestNote:     c.LatestNote,
 		Status:         c.Status,
+		RejectReason:   c.RejectReason,
 		MilestoneCount: c.MilestoneCount,
 		CreatedAt:      c.CreatedAt.Format("2006-01-02 15:04:05"),
 		UpdatedAt:      c.UpdatedAt.Format("2006-01-02 15:04:05"),

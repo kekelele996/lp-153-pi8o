@@ -208,8 +208,9 @@ curl -sS -X POST http://localhost:19403/api/v1/capsules \
 | POST | `/wishes/:id/claim` | 认领心愿（事务 + 行锁防并发重复认领） | JWT |
 | GET | `/wishes/:id/claim` | 心愿的认领记录 | JWT |
 | GET | `/claims/mine` | 我认领的心愿 | JWT |
-| PUT | `/claims/:id/progress` | 更新进度（里程碑打卡） | JWT |
-| POST | `/claims/:id/complete` | 标记完成 | JWT |
+| PUT | `/claims/:id/progress` | 更新进度（里程碑打卡；进度 100% 不自动完成） | JWT |
+| POST | `/claims/:id/complete` | 提交完成 → 进入待确认（pending_confirmation），待发布者验收；重复提交幂等 | JWT |
+| POST | `/wishes/:id/review` | 发布者验收：`{approved:true}` 通过；`{approved:false,reason}` 退回（reason 必填），恢复圆梦中 | JWT |
 
 ### 祝福留言板
 
@@ -256,7 +257,7 @@ curl -sS -X POST http://localhost:19403/api/v1/capsules \
 
 ## 共享枚举出现位置清单
 
-### 枚举 1：心愿状态（pending / claimed / in_progress / completed）
+### 枚举 1：心愿状态（pending / claimed / in_progress / pending_confirmation / completed）
 
 | 层 | 位置 |
 | --- | --- |
