@@ -57,7 +57,7 @@ func (h *WishClaimHandler) UpdateProgress(c *gin.Context) {
 	c.JSON(200, gin.H{"code": 0, "message": constants.MsgUpdateSuccess, "data": dto.ToWishClaimResponse(claim, "", "")})
 }
 
-// Complete POST /api/v1/claims/:id/complete
+// Complete POST /api/v1/claims/:id/complete （圆梦人提交完成，进入待确认）
 func (h *WishClaimHandler) Complete(c *gin.Context) {
 	claimID, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil {
@@ -74,7 +74,43 @@ func (h *WishClaimHandler) Complete(c *gin.Context) {
 		handleError(c, err)
 		return
 	}
-	c.JSON(200, gin.H{"code": 0, "message": constants.MsgWishCompleted, "data": dto.ToWishClaimResponse(claim, "", "")})
+	c.JSON(200, gin.H{"code": 0, "message": constants.MsgClaimSubmitted, "data": dto.ToWishClaimResponse(claim, "", "")})
+}
+
+// Approve POST /api/v1/claims/:id/approve （发布者验收通过）
+func (h *WishClaimHandler) Approve(c *gin.Context) {
+	claimID, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		responseError(c, 400, constants.CodeBadRequest, "认领 id 参数非法")
+		return
+	}
+	userID := middleware.CurrentUserID(c)
+	claim, err := h.claim.Approve(c.Request.Context(), userID, claimID, c.ClientIP(), middleware.GetRequestID(c))
+	if err != nil {
+		handleError(c, err)
+		return
+	}
+	c.JSON(200, gin.H{"code": 0, "message": constants.MsgClaimApproved, "data": dto.ToWishClaimResponse(claim, "", "")})
+}
+
+// Reject POST /api/v1/claims/:id/reject （发布者退回，需写明原因）
+func (h *WishClaimHandler) Reject(c *gin.Context) {
+	claimID, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		responseError(c, 400, constants.CodeBadRequest, "认领 id 参数非法")
+		return
+	}
+	var req dto.RejectClaimRequest
+	if !bindJSON(c, &req) {
+		return
+	}
+	userID := middleware.CurrentUserID(c)
+	claim, err := h.claim.Reject(c.Request.Context(), userID, claimID, req, c.ClientIP(), middleware.GetRequestID(c))
+	if err != nil {
+		handleError(c, err)
+		return
+	}
+	c.JSON(200, gin.H{"code": 0, "message": constants.MsgClaimRejected, "data": dto.ToWishClaimResponse(claim, "", "")})
 }
 
 // Mine GET /api/v1/claims/mine

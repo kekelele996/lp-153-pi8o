@@ -10,4 +10,7 @@ export const claimApi = {
     http.put<ClaimSummary>(`/claims/${claimId}/progress`, payload),
   complete: (claimId: number, payload: { note?: string }) =>
     http.post<ClaimSummary>(`/claims/${claimId}/complete`, payload),
+  approve: (claimId: number) => http.post<ClaimSummary>(`/claims/${claimId}/approve`),
+  reject: (claimId: number, payload: { reason: string }) =>
+    http.post<ClaimSummary>(`/claims/${claimId}/reject`, payload),
 };

@@ -14,11 +14,13 @@ import (
 	"github.com/wishwall/wishwall/internal/util"
 )
 
-// WishClaimService 心愿认领服务：认领（事务+行锁）、进度更新、完成、我的认领。
+// WishClaimService 心愿认领服务：认领（事务+行锁）、进度更新、提交完成、发布者验收、我的认领。
 type WishClaimService interface {
 	Claim(ctx context.Context, userID, wishID uint64, ip, requestID string) (*model.WishClaim, error)
 	UpdateProgress(ctx context.Context, userID, claimID uint64, req dto.UpdateProgressRequest, ip, requestID string) (*model.WishClaim, error)
 	Complete(ctx context.Context, userID, claimID uint64, req dto.CompleteClaimRequest, ip, requestID string) (*model.WishClaim, error)
+	Approve(ctx context.Context, userID, claimID uint64, ip, requestID string) (*model.WishClaim, error)
+	Reject(ctx context.Context, userID, claimID uint64, req dto.RejectClaimRequest, ip, requestID string) (*model.WishClaim, error)
 	ListMine(userID uint64, q dto.PageQuery) (*dto.PageResult, error)
 	GetByWishID(userID, wishID uint64) (*model.WishClaim, error)
 }
@@ -94,9 +96,11 @@ func (s *wishClaimService) Claim(ctx context.Context, userID, wishID uint64, ip,
 	return created, nil
 }
 
-// UpdateProgress 更新进度：progress>=100 时状态机流转为 completed。
+// UpdateProgress 更新进度：progress>=100 时进入 pending_confirm（待发布者验收），不直接完成。
+// 待确认期间重复提交 100% 保持原状态（幂等）；待确认期间下调进度被拒绝。
 func (s *wishClaimService) UpdateProgress(ctx context.Context, userID, claimID uint64, req dto.UpdateProgressRequest, ip, requestID string) (*model.WishClaim, error) {
 	var updated *model.WishClaim
+	submitted := false
 	err := s.tx.Transaction(func(tx *gorm.DB) error {
 		claim, err := s.claim.FindByID(claimID)
 		if err != nil {
@@ -112,6 +116,17 @@ func (s *wishClaimService) UpdateProgress(ctx context.Context, userID, claimID u
 		if err != nil {
 			return util.NewAppError(constants.CodeWishNotFound, constants.MsgWishNotFound, err)
 		}
+		if claim.Status == constants.WishStatusCompleted {
+			return util.NewAppError(constants.CodeClaimStatusInvalid, "心愿已完成，进度不可再修改", errors.New("claim already completed"))
+		}
+		// 待确认期间：重复提交（progress>=100）保持原状态，不允许下调进度。
+		if claim.Status == constants.WishStatusPendingConfirm {
+			if req.Progress < 100 {
+				return util.NewAppError(constants.CodeClaimStatusInvalid, constants.MsgClaimConfirmLocked, errors.New("claim pending confirmation"))
+			}
+			updated = claim
+			return nil
+		}
 		claim.Progress = req.Progress
 		if req.Note != "" {
 			claim.LatestNote = req.Note
@@ -120,14 +135,18 @@ func (s *wishClaimService) UpdateProgress(ctx context.Context, userID, claimID u
 			claim.MilestoneCount++
 		}
 		if claim.Progress >= 100 {
-			claim.Status = constants.WishStatusCompleted
-			wish.Status = constants.WishStatusCompleted
-			wish.CompletionNote = req.Note
+			// 提交完成：只进入待确认，心愿暂不进入发现广场，待发布者验收通过后才完成。
+			claim.Status = constants.WishStatusPendingConfirm
+			wish.Status = constants.WishStatusPendingConfirm
+			claim.RejectReason = ""
+			submitted = true
 		} else {
 			if claim.Status == constants.WishStatusClaimed {
 				claim.Status = constants.WishStatusInProgress
 			}
 			wish.Status = constants.WishStatusInProgress
+			// 退回后圆梦人调整进度：清空上一次退回原因。
+			claim.RejectReason = ""
 		}
 		if err := s.claim.UpdateWithTx(tx, claim); err != nil {
 			return util.NewAppError(constants.CodeInternalError, constants.MsgInternalError, err)
@@ -141,27 +160,140 @@ func (s *wishClaimService) UpdateProgress(ctx context.Context, userID, claimID u
 	if err != nil {
 		return nil, err
 	}
+	// 待确认期间重复提交：保持原状态直接返回，不重复埋点。
+	if !submitted && updated.Status == constants.WishStatusPendingConfirm {
+		s.logger.Info(constants.LogClaimProgress, "claim_id", claimID, "progress", updated.Progress,
+			"status", updated.Status, "user_id", userID, "resubmitted", true)
+		return updated, nil
+	}
 	s.logger.Info(constants.LogClaimProgress, "claim_id", claimID, "progress", updated.Progress, "user_id", userID)
 	_ = s.audit.Record(&model.AuditLog{
 		UserID: userID, Action: "update_progress", EntityType: "wish_claim", EntityID: u64str(claimID),
 		Detail: "更新圆梦进度至 " + itoa(updated.Progress) + "%", IP: ip, RequestID: requestID,
 	})
-	if updated.Status == constants.WishStatusCompleted {
-		s.logger.Info(constants.LogClaimCompleted, "claim_id", claimID, "user_id", userID)
+	if submitted {
+		// 提交完成：进度保留 100%，等待发布者验收（暂不计入完成数/排行榜）。
+		s.logger.Info(constants.LogClaimSubmitted, "claim_id", claimID, "wish_id", updated.WishID, "user_id", userID)
 		_ = s.audit.Record(&model.AuditLog{
-			UserID: userID, Action: "complete_wish", EntityType: "wish_claim", EntityID: u64str(claimID),
-			Detail: "心愿达成，进入庆祝时刻", IP: ip, RequestID: requestID,
+			UserID: userID, Action: "submit_completion", EntityType: "wish_claim", EntityID: u64str(claimID),
+			Detail: "提交完成，等待发布者验收", IP: ip, RequestID: requestID,
 		})
-		if err := s.badge.GrantCompletionBadges(userID); err != nil {
-			s.logger.Warn("grant completion badge failed", "error", err)
-		}
 	}
 	return updated, nil
 }
 
-// Complete 直接完成心愿（进度置 100）。
+// Complete 提交完成（进度置 100，进入待确认）。
 func (s *wishClaimService) Complete(ctx context.Context, userID, claimID uint64, req dto.CompleteClaimRequest, ip, requestID string) (*model.WishClaim, error) {
 	return s.UpdateProgress(ctx, userID, claimID, dto.UpdateProgressRequest{Progress: 100, Note: req.Note, IsMilestone: true}, ip, requestID)
+}
+
+// Approve 发布者验收通过：心愿与认领均转为 completed，并计入排行榜（按完成数统计 + 发放完成徽章）。
+func (s *wishClaimService) Approve(ctx context.Context, userID, claimID uint64, ip, requestID string) (*model.WishClaim, error) {
+	var approved *model.WishClaim
+	err := s.tx.Transaction(func(tx *gorm.DB) error {
+		claim, err := s.claim.FindByID(claimID)
+		if err != nil {
+			if errors.Is(err, repository.ErrNotFound) {
+				return util.NewAppError(constants.CodeClaimNotFound, constants.MsgClaimNotFound, err)
+			}
+			return util.NewAppError(constants.CodeInternalError, constants.MsgInternalError, err)
+		}
+		wish, err := s.wish.FindByIDForUpdate(tx, claim.WishID)
+		if err != nil {
+			if errors.Is(err, repository.ErrNotFound) {
+				return util.NewAppError(constants.CodeWishNotFound, constants.MsgWishNotFound, err)
+			}
+			return util.NewAppError(constants.CodeInternalError, constants.MsgInternalError, err)
+		}
+		if err := s.checkPublisher(userID, claim, wish); err != nil {
+			return err
+		}
+		if claim.Status != constants.WishStatusPendingConfirm {
+			return util.NewAppError(constants.CodeClaimStatusInvalid, constants.MsgClaimNotPendingConfirm, errors.New("claim status not pending_confirm"))
+		}
+		claim.Status = constants.WishStatusCompleted
+		claim.RejectReason = ""
+		wish.Status = constants.WishStatusCompleted
+		wish.CompletionNote = claim.LatestNote
+		if err := s.claim.UpdateWithTx(tx, claim); err != nil {
+			return util.NewAppError(constants.CodeInternalError, constants.MsgInternalError, err)
+		}
+		if err := s.wish.UpdateWithTx(tx, wish); err != nil {
+			return util.NewAppError(constants.CodeInternalError, constants.MsgInternalError, err)
+		}
+		approved = claim
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	s.logger.Info(constants.LogClaimApproved, "claim_id", claimID, "wish_id", approved.WishID, "publisher_id", userID, "fulfiller_id", approved.UserID)
+	s.logger.Info(constants.LogClaimCompleted, "claim_id", claimID, "user_id", approved.UserID)
+	_ = s.audit.Record(&model.AuditLog{
+		UserID: userID, Action: "approve_completion", EntityType: "wish_claim", EntityID: u64str(claimID),
+		Detail: "发布者验收通过，心愿达成，进入庆祝时刻", IP: ip, RequestID: requestID,
+	})
+	// 通过后才计入完成数与排行榜（十次圆梦/圆梦大师徽章）。
+	if err := s.badge.GrantCompletionBadges(approved.UserID); err != nil {
+		s.logger.Warn("grant completion badge failed", "error", err)
+	}
+	return approved, nil
+}
+
+// Reject 发布者退回：写明原因，心愿与认领恢复 in_progress，圆梦人调整进度后可再次提交。
+func (s *wishClaimService) Reject(ctx context.Context, userID, claimID uint64, req dto.RejectClaimRequest, ip, requestID string) (*model.WishClaim, error) {
+	var rejected *model.WishClaim
+	err := s.tx.Transaction(func(tx *gorm.DB) error {
+		claim, err := s.claim.FindByID(claimID)
+		if err != nil {
+			if errors.Is(err, repository.ErrNotFound) {
+				return util.NewAppError(constants.CodeClaimNotFound, constants.MsgClaimNotFound, err)
+			}
+			return util.NewAppError(constants.CodeInternalError, constants.MsgInternalError, err)
+		}
+		wish, err := s.wish.FindByIDForUpdate(tx, claim.WishID)
+		if err != nil {
+			if errors.Is(err, repository.ErrNotFound) {
+				return util.NewAppError(constants.CodeWishNotFound, constants.MsgWishNotFound, err)
+			}
+			return util.NewAppError(constants.CodeInternalError, constants.MsgInternalError, err)
+		}
+		if err := s.checkPublisher(userID, claim, wish); err != nil {
+			return err
+		}
+		if claim.Status != constants.WishStatusPendingConfirm {
+			return util.NewAppError(constants.CodeClaimStatusInvalid, constants.MsgClaimNotPendingConfirm, errors.New("claim status not pending_confirm"))
+		}
+		claim.Status = constants.WishStatusInProgress
+		claim.RejectReason = req.Reason
+		wish.Status = constants.WishStatusInProgress
+		if err := s.claim.UpdateWithTx(tx, claim); err != nil {
+			return util.NewAppError(constants.CodeInternalError, constants.MsgInternalError, err)
+		}
+		if err := s.wish.UpdateWithTx(tx, wish); err != nil {
+			return util.NewAppError(constants.CodeInternalError, constants.MsgInternalError, err)
+		}
+		rejected = claim
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	s.logger.Info(constants.LogClaimRejected, "claim_id", claimID, "wish_id", rejected.WishID,
+		"publisher_id", userID, "fulfiller_id", rejected.UserID, "reason", req.Reason)
+	_ = s.audit.Record(&model.AuditLog{
+		UserID: userID, Action: "reject_completion", EntityType: "wish_claim", EntityID: u64str(claimID),
+		Detail: "发布者退回完成申请：" + util.TruncateString(req.Reason, 100), IP: ip, RequestID: requestID,
+	})
+	return rejected, nil
+}
+
+// checkPublisher 校验当前用户是该心愿的发布者（验收操作仅发布者可执行）。
+func (s *wishClaimService) checkPublisher(userID uint64, claim *model.WishClaim, wish *model.Wish) error {
+	if wish.UserID != userID {
+		return util.NewAppError(constants.CodeWishNotOwner, constants.MsgWishNotOwner, errors.New("wish publisher mismatch"))
+	}
+	return nil
 }
 
 func (s *wishClaimService) ListMine(userID uint64, q dto.PageQuery) (*dto.PageResult, error) {
@@ -189,13 +321,15 @@ func (s *wishClaimService) ListMine(userID uint64, q dto.PageQuery) (*dto.PageRe
 	return &dto.PageResult{Items: items, Total: total, Page: page, PageSize: size}, nil
 }
 
-// GetByWishID 查询某心愿的认领（心愿详情页圆梦人模块复用）。
+// GetByWishID 查询某心愿的认领：圆梦人本人或心愿发布者可查看（详情页验收操作复用）。
 func (s *wishClaimService) GetByWishID(userID, wishID uint64) (*model.WishClaim, error) {
 	claim, err := s.claim.FindByWishID(wishID)
 	if err != nil {
 		return nil, util.NewAppError(constants.CodeClaimNotFound, constants.MsgClaimNotFound, err)
 	}
-	if claim.UserID != userID {
+	wish, werr := s.wish.FindByID(wishID)
+	isPublisher := werr == nil && wish.UserID == userID
+	if claim.UserID != userID && !isPublisher {
 		return nil, util.NewAppError(constants.CodeForbidden, constants.MsgNeedLogin+"：无权限查看该认领", errors.New("claim visibility forbidden"))
 	}
 	return claim, nil

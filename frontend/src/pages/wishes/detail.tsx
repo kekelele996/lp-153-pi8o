@@ -10,6 +10,7 @@ import ProgressBar from "@/components/ProgressBar";
 import StatusBadge from "@/components/StatusBadge";
 import { useToast } from "@/components/Toast";
 import { useAuth } from "@/hooks/useAuth";
+import { WISH_STATUS } from "@/constants";
 import { formatCategory, formatDate, formatDeadline, formatDifficulty } from "@/utils/format";
 
 export default function WishDetailPage() {
@@ -24,6 +25,7 @@ export default function WishDetailPage() {
   const [gift, setGift] = useState("");
   const [progress, setProgress] = useState(0);
   const [note, setNote] = useState("");
+  const [rejectReason, setRejectReason] = useState("");
   const [actionLoading, setActionLoading] = useState(false);
 
   const load = useCallback(async (wishId: number) => {
@@ -83,8 +85,44 @@ export default function WishDetailPage() {
     setActionLoading(true);
     try {
       await claimApi.complete(wish.claim.id, { note });
-      toast.show("心愿完成，进入庆祝时刻 🎉");
+      toast.show("已提交完成，等待发布者确认 ⏳");
       setNote("");
+      load(id);
+    } catch (e) {
+      toast.show((e as Error).message, "error");
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  // 发布者验收通过：通过后心愿才转为已完成并进入发现广场/排行榜。
+  const approve = async () => {
+    if (!wish?.claim) return;
+    setActionLoading(true);
+    try {
+      await claimApi.approve(wish.claim.id);
+      toast.show("验收通过，心愿达成 🎉");
+      setRejectReason("");
+      load(id);
+    } catch (e) {
+      toast.show((e as Error).message, "error");
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  // 发布者退回：必须写明原因，退回后心愿恢复进行中。
+  const reject = async () => {
+    if (!wish?.claim) return;
+    if (!rejectReason.trim()) {
+      toast.show("退回时请写明原因", "error");
+      return;
+    }
+    setActionLoading(true);
+    try {
+      await claimApi.reject(wish.claim.id, { reason: rejectReason.trim() });
+      toast.show("已退回，圆梦人调整后可重新提交");
+      setRejectReason("");
       load(id);
     } catch (e) {
       toast.show((e as Error).message, "error");
@@ -119,7 +157,10 @@ export default function WishDetailPage() {
   }
 
   const isOwner = isAuthed() && wish.user_id === user?.id;
-  const isFulfiller = Boolean(wish.claim);
+  const isFulfiller = Boolean(wish.claim && isAuthed() && wish.claim.user_id === user?.id);
+  const claimStatus = wish.claim?.status;
+  const isPendingConfirm = claimStatus === WISH_STATUS.PENDING_CONFIRM;
+  const isRejected = claimStatus === WISH_STATUS.IN_PROGRESS && Boolean(wish.claim?.reject_reason);
 
   return (
     <div className="mx-auto max-w-3xl space-y-6">
@@ -160,6 +201,14 @@ export default function WishDetailPage() {
           </div>
         )}
 
+        {isPendingConfirm && (
+          <div className="rounded-xl border border-orange-200 bg-orange-50 p-4 text-center">
+            <div className="text-2xl">⏳</div>
+            <p className="mt-1 font-semibold text-orange-700">圆梦人已提交完成，等待发布者验收</p>
+            <p className="mt-1 text-sm text-orange-600">验收通过后心愿才会完成，并出现在发现广场与排行榜</p>
+          </div>
+        )}
+
         {wish.claim && (
           <div className="rounded-xl bg-purple-50 p-4">
             <div className="mb-2 flex items-center justify-between">
@@ -170,22 +219,59 @@ export default function WishDetailPage() {
             </div>
             <ProgressBar progress={wish.claim.progress} label="圆梦进度" />
             {wish.claim.latest_note && <p className="mt-2 text-sm text-gray-600">{wish.claim.latest_note}</p>}
+            {wish.claim.reject_reason && (
+              <p className="mt-2 rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-600">
+                发布者退回原因：{wish.claim.reject_reason}
+              </p>
+            )}
           </div>
         )}
 
+        {/* 发布者验收区：仅发布者本人在待确认时可见 */}
+        {isOwner && isPendingConfirm && wish.claim && (
+          <div className="space-y-3 rounded-xl border border-orange-200 bg-white p-4">
+            <p className="text-sm font-medium text-gray-700">发布者验收</p>
+            <textarea
+              className="input min-h-[60px]"
+              value={rejectReason}
+              onChange={(e) => setRejectReason(e.target.value)}
+              placeholder="退回时必须写明原因（至少 2 个字），帮助圆梦人补充完善..."
+            />
+            <div className="flex gap-3">
+              <button className="btn-secondary" disabled={actionLoading} onClick={reject}>退回并说明原因 ↩️</button>
+              <button className="btn-primary" disabled={actionLoading} onClick={approve}>验收通过 🎉</button>
+            </div>
+          </div>
+        )}
+
+        {/* 圆梦人进度区：仅圆梦人本人可见；待确认期间只读等待，退回后可调整进度再次提交 */}
         {isFulfiller && wish.status !== "completed" && (
           <div className="space-y-3 rounded-xl border border-purple-100 bg-white p-4">
-            <p className="text-sm font-medium text-gray-700">更新圆梦进度</p>
-            <input type="range" min={0} max={100} value={progress} onChange={(e) => setProgress(Number(e.target.value))} className="w-full" />
-            <div className="flex items-center gap-2 text-sm text-gray-500">
-              <span>当前进度：{progress}%</span>
-              <button className="btn-secondary !py-1 !px-3" disabled={actionLoading} onClick={() => updateProgress(progress, true)}>里程碑打卡 🎯</button>
-            </div>
-            <textarea className="input min-h-[60px]" value={note} onChange={(e) => setNote(e.target.value)} placeholder="记录进度说明/故事..." />
-            <div className="flex gap-3">
-              <button className="btn-secondary" disabled={actionLoading} onClick={() => updateProgress(progress, false)}>保存进度</button>
-              <button className="btn-primary" disabled={actionLoading} onClick={complete}>标记完成 🎉</button>
-            </div>
+            {isPendingConfirm ? (
+              <>
+                <p className="text-sm font-medium text-orange-700">⏳ 已提交完成（进度 {wish.claim?.progress}%），等待发布者验收</p>
+                <p className="text-sm text-gray-500">验收期间进度暂不可调整；若被退回，可修改进度后重新提交。</p>
+              </>
+            ) : (
+              <>
+                {isRejected && (
+                  <p className="rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-600">
+                    发布者退回了本次完成申请：{wish.claim?.reject_reason}，请调整进度或补充说明后再次提交。
+                  </p>
+                )}
+                <p className="text-sm font-medium text-gray-700">更新圆梦进度</p>
+                <input type="range" min={0} max={100} value={progress} onChange={(e) => setProgress(Number(e.target.value))} className="w-full" />
+                <div className="flex items-center gap-2 text-sm text-gray-500">
+                  <span>当前进度：{progress}%</span>
+                  <button className="btn-secondary !py-1 !px-3" disabled={actionLoading} onClick={() => updateProgress(progress, true)}>里程碑打卡 🎯</button>
+                </div>
+                <textarea className="input min-h-[60px]" value={note} onChange={(e) => setNote(e.target.value)} placeholder="记录进度说明/故事..." />
+                <div className="flex gap-3">
+                  <button className="btn-secondary" disabled={actionLoading} onClick={() => updateProgress(progress, false)}>保存进度</button>
+                  <button className="btn-primary" disabled={actionLoading} onClick={complete}>提交完成 ⏳</button>
+                </div>
+              </>
+            )}
           </div>
         )}
 

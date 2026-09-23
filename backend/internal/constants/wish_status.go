@@ -1,11 +1,13 @@
 package constants
 
-// 心愿状态机：pending -> claimed -> in_progress -> completed。
+// 心愿状态机：pending -> claimed -> in_progress -> pending_confirm -> completed。
+// 发布者验收不通过时 pending_confirm -> in_progress（圆梦人调整进度后可再次提交）。
 const (
-	WishStatusPending    = "pending"
-	WishStatusClaimed    = "claimed"
-	WishStatusInProgress = "in_progress"
-	WishStatusCompleted  = "completed"
+	WishStatusPending        = "pending"
+	WishStatusClaimed        = "claimed"
+	WishStatusInProgress     = "in_progress"
+	WishStatusPendingConfirm = "pending_confirm"
+	WishStatusCompleted      = "completed"
 )
 
 // ValidWishStatuses 状态筛选白名单。
@@ -13,6 +15,7 @@ var ValidWishStatuses = []string{
 	WishStatusPending,
 	WishStatusClaimed,
 	WishStatusInProgress,
+	WishStatusPendingConfirm,
 	WishStatusCompleted,
 }
 
@@ -25,6 +28,8 @@ func WishStatusText(status string) string {
 		return "已被认领"
 	case WishStatusInProgress:
 		return "圆梦中"
+	case WishStatusPendingConfirm:
+		return "待确认"
 	case WishStatusCompleted:
 		return "已完成"
 	default:

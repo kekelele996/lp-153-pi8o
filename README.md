@@ -29,7 +29,7 @@ docker compose down -v --remove-orphans
 ## 项目主要功能
 
 1. **心愿发布**：文字 + 图片，分类（学习成长/旅行探险/情感陪伴/职业发展/生活小确幸/其他），可见范围（公开/好友可见/匿名），期望完成时间 + 难度标签。
-2. **心愿认领与进度追踪**：心愿广场浏览并认领心愿成为「圆梦人」，更新进度（百分比 + 文字），支持里程碑打卡。
+2. **心愿认领与进度追踪**：心愿广场浏览并认领心愿成为「圆梦人」，更新进度（百分比 + 文字），支持里程碑打卡。圆梦人提交完成后只进入「待确认」，由发布者验收：通过才转为已完成并进入发现广场/排行榜，退回需写明原因并恢复进行中，圆梦人调整后可再次提交。
 3. **祝福留言板**：每个心愿专属留言板，送祝福与虚拟礼物（🎁 表情包）；心愿完成自动转为庆祝页。
 4. **时光胶囊**：定时解锁的文字 + 图片 + 音频胶囊；解锁前内容打码，到期自动解锁并播放解锁动画。
 5. **心愿成就徽章**：首次许愿、首次认领、首次祝福、十次圆梦、圆梦大师；展示在个人主页。
@@ -206,10 +206,12 @@ curl -sS -X POST http://localhost:19403/api/v1/capsules \
 | 方法 | 路径 | 说明 | 鉴权 |
 | --- | --- | --- | --- |
 | POST | `/wishes/:id/claim` | 认领心愿（事务 + 行锁防并发重复认领） | JWT |
-| GET | `/wishes/:id/claim` | 心愿的认领记录 | JWT |
+| GET | `/wishes/:id/claim` | 心愿的认领记录（圆梦人本人或发布者） | JWT |
 | GET | `/claims/mine` | 我认领的心愿 | JWT |
-| PUT | `/claims/:id/progress` | 更新进度（里程碑打卡） | JWT |
-| POST | `/claims/:id/complete` | 标记完成 | JWT |
+| PUT | `/claims/:id/progress` | 更新进度（里程碑打卡；进度 100% 提交进入待确认） | JWT |
+| POST | `/claims/:id/complete` | 提交完成（进入待确认，等待发布者验收） | JWT |
+| POST | `/claims/:id/approve` | 发布者验收通过（转为已完成，计入排行榜/徽章） | JWT |
+| POST | `/claims/:id/reject` | 发布者退回（body `reason` 必填，恢复进行中） | JWT |
 
 ### 祝福留言板
 
@@ -256,7 +258,7 @@ curl -sS -X POST http://localhost:19403/api/v1/capsules \
 
 ## 共享枚举出现位置清单
 
-### 枚举 1：心愿状态（pending / claimed / in_progress / completed）
+### 枚举 1：心愿状态（pending / claimed / in_progress / pending_confirm / completed）
 
 | 层 | 位置 |
 | --- | --- |

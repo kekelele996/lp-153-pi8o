@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS wish_claims (
     latest_note     TEXT DEFAULT '',
     status          VARCHAR(20) NOT NULL DEFAULT 'claimed',
     milestone_count INT NOT NULL DEFAULT 0,
+    reject_reason   TEXT DEFAULT '',
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
